@@ -1,16 +1,22 @@
 create extension if not exists "pgcrypto";
 
 do $$ begin
-  create type public.game_mode as enum ('initials', 'team-battle');
+  create type public.game_mode as enum ('initials', 'team-battle', 'imposter', 'five-teams');
 exception
   when duplicate_object then null;
 end $$;
 
+alter type public.game_mode add value if not exists 'imposter';
+alter type public.game_mode add value if not exists 'five-teams';
+
 do $$ begin
-  create type public.room_phase as enum ('lobby', 'countdown', 'playing', 'reveal', 'leaderboard', 'team_showing', 'finished');
+  create type public.room_phase as enum ('lobby', 'countdown', 'playing', 'reveal', 'leaderboard', 'team_showing', 'imposter', 'finished');
 exception
   when duplicate_object then null;
 end $$;
+
+alter type public.room_phase add value if not exists 'team_showing';
+alter type public.room_phase add value if not exists 'imposter';
 
 do $$ begin
   create type public.vote_value as enum ('accept', 'reject');
@@ -24,16 +30,27 @@ create table if not exists public.rooms (
   host_player_id uuid,
   game_mode public.game_mode not null default 'initials',
   target_score integer not null default 10 check (target_score in (5, 10, 15)),
+  five_team_seconds integer not null default 10 check (five_team_seconds between 5 and 60),
   phase public.room_phase not null default 'lobby',
   current_round integer not null default 0,
   initials text,
   team_a text,
   team_b text,
+  imposter_player_id uuid,
+  imposter_player_name text,
+  imposter_clue text,
   phase_ends_at timestamptz,
   winner_player_id uuid,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.rooms add column if not exists five_team_seconds integer not null default 10;
+alter table public.rooms drop constraint if exists rooms_five_team_seconds_check;
+alter table public.rooms add constraint rooms_five_team_seconds_check check (five_team_seconds between 5 and 60);
+alter table public.rooms add column if not exists imposter_player_id uuid;
+alter table public.rooms add column if not exists imposter_player_name text;
+alter table public.rooms add column if not exists imposter_clue text;
 
 create table if not exists public.players (
   id uuid primary key default gen_random_uuid(),

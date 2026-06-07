@@ -1,4 +1,4 @@
-export type GameMode = "initials" | "team-battle" | "imposter";
+export type GameMode = "initials" | "team-battle" | "imposter" | "five-teams";
 
 export type RoomPhase =
   | "lobby"
@@ -18,6 +18,7 @@ export type Room = {
   host_player_id: string | null;
   game_mode: GameMode;
   target_score: number;
+  five_team_seconds?: number | null;
   phase: RoomPhase;
   current_round: number;
   initials: string | null;

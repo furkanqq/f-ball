@@ -36,6 +36,41 @@ export function randomMatchup() {
   };
 }
 
+export function randomTeamSet(size: number) {
+  const indexes = new Set<number>();
+
+  while (indexes.size < Math.min(size, TEAM_DATABASE.length)) {
+    indexes.add(Math.floor(Math.random() * TEAM_DATABASE.length));
+  }
+
+  return [...indexes].map((index) => TEAM_DATABASE[index]);
+}
+
+export function encodeTeamSet(teamNames: string[]) {
+  return JSON.stringify(teamNames);
+}
+
+export function decodeTeamSet(value: string | null) {
+  if (!value) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+
+    if (Array.isArray(parsed)) {
+      return parsed.filter((item): item is string => typeof item === "string");
+    }
+  } catch {
+    return value
+      .split("|")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
 export function secondsFromNow(seconds: number) {
   return new Date(Date.now() + seconds * 1000).toISOString();
 }

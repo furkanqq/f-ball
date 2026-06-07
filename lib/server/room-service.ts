@@ -1,12 +1,21 @@
-import { TARGET_SCORES } from "@/lib/constants";
+import {
+  DEFAULT_FIVE_TEAM_SECONDS,
+  FIVE_TEAM_COUNT,
+  FIVE_TEAM_ROUNDS,
+  MAX_FIVE_TEAM_SECONDS,
+  MIN_FIVE_TEAM_SECONDS,
+  TARGET_SCORES,
+} from "@/lib/constants";
 import {
   createRoomCode,
+  encodeTeamSet,
   isAcceptedByMajority,
   normalizeAnswer,
   normalizeNickname,
   normalizeRoomCode,
   randomInitials,
   randomMatchup,
+  randomTeamSet,
   secondsFromNow,
 } from "@/lib/game-utils";
 import { randomImposterPick } from "@/lib/server/players";
@@ -15,6 +24,11 @@ import type { Answer, GameMode, Player, Room, RoomSnapshot, Vote, VoteValue } fr
 
 const MAX_PLAYERS = 8;
 const MIN_PLAYERS = 2;
+
+type ManualScore = {
+  playerId: string;
+  points: number;
+};
 
 export async function getRoomSnapshot(code: string): Promise<RoomSnapshot | null> {
   const supabase = createServerSupabaseClient();
@@ -179,7 +193,13 @@ export async function joinRoom(code: string, nickname: string) {
   return { room: snapshot.room, player };
 }
 
-export async function updateSettings(code: string, playerId: string, gameMode: GameMode, targetScore: number) {
+export async function updateSettings(
+  code: string,
+  playerId: string,
+  gameMode: GameMode,
+  targetScore: number,
+  fiveTeamSeconds?: number,
+) {
   const supabase = createServerSupabaseClient();
   const snapshot = await requireHost(code, playerId);
 
@@ -191,11 +211,17 @@ export async function updateSettings(code: string, playerId: string, gameMode: G
     throw new Error("Choose a valid target score.");
   }
 
+  const shouldUpdateFiveTeamSeconds = gameMode === "five-teams" || fiveTeamSeconds !== undefined;
+  const cleanFiveTeamSeconds = shouldUpdateFiveTeamSeconds
+    ? normalizeFiveTeamSeconds(fiveTeamSeconds ?? snapshot.room.five_team_seconds ?? DEFAULT_FIVE_TEAM_SECONDS)
+    : null;
+
   const { data, error } = await supabase
     .from("rooms")
     .update({
       game_mode: gameMode,
       target_score: targetScore,
+      ...(cleanFiveTeamSeconds === null ? {} : { five_team_seconds: cleanFiveTeamSeconds }),
     })
     .eq("id", snapshot.room.id)
     .select("*")
@@ -226,6 +252,10 @@ export async function startGame(code: string, playerId: string) {
     throw new Error("A round is already in progress.");
   }
 
+  if (snapshot.room.game_mode === "five-teams" && snapshot.room.current_round >= FIVE_TEAM_ROUNDS) {
+    return finishFiveTeamGame(snapshot);
+  }
+
   const nextRound = snapshot.room.current_round + 1;
 
   if (snapshot.room.game_mode === "imposter") {
@@ -251,6 +281,33 @@ export async function startGame(code: string, playerId: string) {
       .single<Room>();
 
     if (error) throw error;
+    return data;
+  }
+
+  if (snapshot.room.game_mode === "five-teams") {
+    const teamSet = randomTeamSet(FIVE_TEAM_COUNT);
+    const { data, error } = await supabase
+      .from("rooms")
+      .update({
+        phase: "countdown",
+        current_round: nextRound,
+        initials: null,
+        team_a: encodeTeamSet(teamSet.map((team) => team.name)),
+        team_b: null,
+        imposter_player_id: null,
+        imposter_player_name: null,
+        imposter_clue: null,
+        phase_ends_at: secondsFromNow(3),
+        winner_player_id: null,
+      })
+      .eq("id", snapshot.room.id)
+      .select("*")
+      .single<Room>();
+
+    if (error) {
+      throw error;
+    }
+
     return data;
   }
 
@@ -286,8 +343,13 @@ export async function advancePhase(code: string, playerId: string) {
   const snapshot = await requireHost(code, playerId);
 
   if (snapshot.room.phase === "countdown") {
-    const nextPhase = snapshot.room.game_mode === "initials" ? "playing" : "team_showing";
-    const duration = snapshot.room.game_mode === "initials" ? 120 : 20;
+    const nextPhase = snapshot.room.game_mode === "team-battle" ? "team_showing" : "playing";
+    const duration =
+      snapshot.room.game_mode === "initials"
+        ? 120
+        : snapshot.room.game_mode === "five-teams"
+          ? normalizeFiveTeamSeconds(snapshot.room.five_team_seconds ?? DEFAULT_FIVE_TEAM_SECONDS)
+          : 20;
     const { data, error } = await supabase
       .from("rooms")
       .update({
@@ -305,7 +367,7 @@ export async function advancePhase(code: string, playerId: string) {
     return data;
   }
 
-  if (snapshot.room.phase === "playing") {
+  if (snapshot.room.phase === "playing" && (snapshot.room.game_mode === "initials" || snapshot.room.game_mode === "five-teams")) {
     const { data, error } = await supabase
       .from("rooms")
       .update({
@@ -331,12 +393,39 @@ export async function submitAnswer(code: string, playerId: string, text: string)
   const snapshot = await requirePlayer(code, playerId);
   const cleanAnswer = normalizeAnswer(text);
 
-  if (snapshot.room.phase !== "playing" || snapshot.room.game_mode !== "initials") {
-    throw new Error("Answers are only open during the initials round.");
+  if (snapshot.room.phase !== "playing" || !["initials", "five-teams"].includes(snapshot.room.game_mode)) {
+    throw new Error("Answers are only open during the playing phase.");
   }
 
   if (!cleanAnswer) {
     throw new Error("Enter an answer.");
+  }
+
+  if (snapshot.room.game_mode === "five-teams") {
+    const existingAnswer = snapshot.answers.find((answer) => answer.player_id === playerId);
+
+    if (existingAnswer) {
+      const { data, error } = await supabase
+        .from("answers")
+        .update({
+          text: cleanAnswer,
+          normalized_text: cleanAnswer.toLocaleLowerCase("en-US"),
+          is_valid: null,
+        })
+        .eq("id", existingAnswer.id)
+        .select("*")
+        .single<Answer>();
+
+      if (error?.code === "23505") {
+        throw new Error("That answer is already used this round.");
+      }
+
+      if (error) {
+        throw error;
+      }
+
+      return data;
+    }
   }
 
   const { data, error } = await supabase
@@ -494,7 +583,7 @@ export async function finalizeRound(code: string, playerId: string) {
   return { room, players: updatedPlayers };
 }
 
-export async function awardPoint(code: string, hostId: string, targetPlayerId: string) {
+export async function awardPoint(code: string, hostId: string, targetPlayerId: string, points = 1) {
   const supabase = createServerSupabaseClient();
   const snapshot = await requireHost(code, hostId);
 
@@ -508,7 +597,7 @@ export async function awardPoint(code: string, hostId: string, targetPlayerId: s
     throw new Error("Player not found.");
   }
 
-  const newScore = target.score + 1;
+  const newScore = target.score + points;
   const { error } = await supabase.from("players").update({ score: newScore }).eq("id", targetPlayerId);
 
   if (error) {
@@ -525,6 +614,61 @@ export async function awardPoint(code: string, hostId: string, targetPlayerId: s
       throw roomError;
     }
   }
+}
+
+export async function awardFiveTeamScores(code: string, hostId: string, scores: ManualScore[]) {
+  const supabase = createServerSupabaseClient();
+  const snapshot = await requireHost(code, hostId);
+
+  if (snapshot.room.phase !== "reveal" || snapshot.room.game_mode !== "five-teams") {
+    throw new Error("Manual scores can only be saved during Five Teams reveal.");
+  }
+
+  const scoreByPlayer = new Map<string, number>();
+
+  for (const score of scores) {
+    const points = Math.trunc(Number(score.points));
+
+    if (!snapshot.players.some((player) => player.id === score.playerId)) {
+      throw new Error("Player not found.");
+    }
+
+    if (!Number.isFinite(points) || points < 0 || points > FIVE_TEAM_COUNT) {
+      throw new Error(`Scores must be between 0 and ${FIVE_TEAM_COUNT}.`);
+    }
+
+    scoreByPlayer.set(score.playerId, points);
+  }
+
+  const updatedPlayers = await Promise.all(
+    snapshot.players.map(async (player) => {
+      const score = player.score + (scoreByPlayer.get(player.id) ?? 0);
+      const { data, error } = await supabase.from("players").update({ score }).eq("id", player.id).select("*").single<Player>();
+
+      if (error) {
+        throw error;
+      }
+
+      return data;
+    }),
+  );
+
+  const finished = snapshot.room.current_round >= FIVE_TEAM_ROUNDS;
+  const winner = finished ? getSingleLeader(updatedPlayers) : null;
+  const { error } = await supabase
+    .from("rooms")
+    .update({
+      phase: finished ? "finished" : "leaderboard",
+      winner_player_id: winner?.id ?? null,
+      phase_ends_at: null,
+    })
+    .eq("id", snapshot.room.id);
+
+  if (error) {
+    throw error;
+  }
+
+  return { players: updatedPlayers, winner };
 }
 
 export async function generateTeamMatchup(code: string, playerId: string) {
@@ -583,4 +727,46 @@ async function requirePlayer(code: string, playerId: string) {
   }
 
   return snapshot;
+}
+
+async function finishFiveTeamGame(snapshot: RoomSnapshot) {
+  const supabase = createServerSupabaseClient();
+  const winner = getSingleLeader(snapshot.players);
+  const { data, error } = await supabase
+    .from("rooms")
+    .update({
+      phase: "finished",
+      winner_player_id: winner?.id ?? null,
+      phase_ends_at: null,
+    })
+    .eq("id", snapshot.room.id)
+    .select("*")
+    .single<Room>();
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
+}
+
+function getSingleLeader(players: Player[]) {
+  const sorted = [...players].sort((a, b) => b.score - a.score || a.joined_at.localeCompare(b.joined_at));
+  const leader = sorted[0] ?? null;
+
+  if (!leader || sorted[1]?.score === leader.score) {
+    return null;
+  }
+
+  return leader;
+}
+
+function normalizeFiveTeamSeconds(value: number) {
+  const seconds = Math.trunc(Number(value));
+
+  if (!Number.isFinite(seconds) || seconds < MIN_FIVE_TEAM_SECONDS || seconds > MAX_FIVE_TEAM_SECONDS) {
+    throw new Error(`Five Teams time must be between ${MIN_FIVE_TEAM_SECONDS} and ${MAX_FIVE_TEAM_SECONDS} seconds.`);
+  }
+
+  return seconds;
 }

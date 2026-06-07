@@ -1,4 +1,9 @@
 export const TARGET_SCORES = [5, 10, 15] as const;
+export const FIVE_TEAM_COUNT = 5;
+export const FIVE_TEAM_ROUNDS = 5;
+export const DEFAULT_FIVE_TEAM_SECONDS = 10;
+export const MIN_FIVE_TEAM_SECONDS = 5;
+export const MAX_FIVE_TEAM_SECONDS = 60;
 
 // export const INITIAL_SEEDS = [
 //   "JR",
@@ -175,5 +180,3 @@ export const TEAM_LOGOS: Record<string, string> = {
   Bursa: "/bursa.png",
   Valencia: "/valencia.png",
 };
-
-

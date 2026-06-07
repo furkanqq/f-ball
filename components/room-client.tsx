@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import {
   Check,
   CircleDot,
@@ -16,8 +17,16 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { TARGET_SCORES, TEAM_LOGOS } from "@/lib/constants";
-import { getAnswerVoteTotals, groupAnswersByPlayer } from "@/lib/game-utils";
+import {
+  DEFAULT_FIVE_TEAM_SECONDS,
+  FIVE_TEAM_COUNT,
+  FIVE_TEAM_ROUNDS,
+  MAX_FIVE_TEAM_SECONDS,
+  MIN_FIVE_TEAM_SECONDS,
+  TARGET_SCORES,
+  TEAM_LOGOS,
+} from "@/lib/constants";
+import { decodeTeamSet, getAnswerVoteTotals, groupAnswersByPlayer } from "@/lib/game-utils";
 import { useSessionStore } from "@/lib/session-store";
 import { createBrowserSupabaseClient } from "@/lib/supabase/client";
 import type { ApiError, GameMode, RoomSnapshot, VoteValue } from "@/lib/types";
@@ -248,11 +257,11 @@ export function RoomClient({ code }: RoomClientProps) {
                 snapshot={snapshot}
                 isHost={isHost}
                 busy={action.busy}
-                onSettings={(gameMode, targetScore) =>
+                onSettings={(gameMode, targetScore, fiveTeamSeconds) =>
                   postAction(
                     `/api/rooms/${activeCode}/settings`,
-                    { playerId, gameMode, targetScore },
-                    `settings-${gameMode}-${targetScore}`,
+                    { playerId, gameMode, targetScore, fiveTeamSeconds },
+                    `settings-${gameMode}-${targetScore}-${fiveTeamSeconds ?? ""}`,
                   )
                 }
                 onStart={() => postAction(`/api/rooms/${activeCode}/start`, { playerId }, "start")}
@@ -261,7 +270,7 @@ export function RoomClient({ code }: RoomClientProps) {
 
             {snapshot.room.phase === "countdown" ? <Countdown snapshot={snapshot} secondsLeft={secondsLeft} /> : null}
 
-            {snapshot.room.phase === "playing" ? (
+            {snapshot.room.phase === "playing" && snapshot.room.game_mode === "initials" ? (
               <InitialsPlaying
                 snapshot={snapshot}
                 currentPlayerId={playerId}
@@ -274,7 +283,18 @@ export function RoomClient({ code }: RoomClientProps) {
               />
             ) : null}
 
-            {snapshot.room.phase === "reveal" ? (
+            {snapshot.room.phase === "playing" && snapshot.room.game_mode === "five-teams" ? (
+              <FiveTeamsPlaying
+                snapshot={snapshot}
+                currentPlayerId={playerId}
+                secondsLeft={secondsLeft}
+                busy={action.busy}
+                onSubmitAnswer={submitAnswer}
+                onDeleteAnswer={deleteAnswer}
+              />
+            ) : null}
+
+            {snapshot.room.phase === "reveal" && snapshot.room.game_mode === "initials" ? (
               <Reveal
                 snapshot={snapshot}
                 currentPlayerId={playerId}
@@ -282,6 +302,15 @@ export function RoomClient({ code }: RoomClientProps) {
                 busy={action.busy}
                 onVote={(answerId, vote) => postAction(`/api/rooms/${activeCode}/votes`, { playerId, answerId, vote }, answerId)}
                 onFinalize={() => postAction(`/api/rooms/${activeCode}/finalize`, { playerId }, "finalize")}
+              />
+            ) : null}
+
+            {snapshot.room.phase === "reveal" && snapshot.room.game_mode === "five-teams" ? (
+              <FiveTeamsReveal
+                snapshot={snapshot}
+                isHost={isHost}
+                busy={action.busy}
+                onScoreRound={(scores) => postAction(`/api/rooms/${activeCode}/score`, { playerId, scores }, "score-round")}
               />
             ) : null}
 
@@ -321,7 +350,12 @@ export function RoomClient({ code }: RoomClientProps) {
           <aside className="grid content-start gap-3 lg:gap-5">
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-1 lg:gap-5">
               <PlayerList snapshot={snapshot} currentPlayerId={playerId} />
-              <Scoreboard players={leaderboard} targetScore={snapshot.room.target_score} />
+              <Scoreboard
+                players={leaderboard}
+                targetScore={
+                  snapshot.room.game_mode === "five-teams" ? FIVE_TEAM_COUNT * FIVE_TEAM_ROUNDS : snapshot.room.target_score
+                }
+              />
             </div>
           </aside>
         </div>
@@ -350,9 +384,26 @@ function Lobby({
   snapshot: RoomSnapshot;
   isHost: boolean;
   busy: string;
-  onSettings: (gameMode: GameMode, targetScore: number) => void;
+  onSettings: (gameMode: GameMode, targetScore: number, fiveTeamSeconds?: number) => void;
   onStart: () => void;
 }) {
+  const fiveTeamSeconds = snapshot.room.five_team_seconds ?? DEFAULT_FIVE_TEAM_SECONDS;
+  const durationInputRef = useRef<HTMLInputElement>(null);
+
+  function saveFiveTeamSeconds(value?: string) {
+    const rawValue = value ?? durationInputRef.current?.value ?? String(fiveTeamSeconds);
+    const seconds = Math.max(
+      MIN_FIVE_TEAM_SECONDS,
+      Math.min(MAX_FIVE_TEAM_SECONDS, Math.trunc(Number(rawValue) || DEFAULT_FIVE_TEAM_SECONDS)),
+    );
+
+    if (durationInputRef.current) {
+      durationInputRef.current.value = String(seconds);
+    }
+
+    onSettings("five-teams", snapshot.room.target_score, seconds);
+  }
+
   return (
     <div className="rounded-lg border border-white/10 bg-black/25 p-5">
       <div className="flex items-start justify-between gap-4">
@@ -366,7 +417,7 @@ function Lobby({
 
       <div className="mt-6 grid gap-5">
         <ControlGroup title="Game Mode">
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <ModeButton
               active={snapshot.room.game_mode === "initials"}
               disabled={!isHost}
@@ -388,10 +439,68 @@ function Lobby({
               detail="Find the player who only knows a clue. Min. 3 players."
               onClick={() => onSettings("imposter", snapshot.room.target_score)}
             />
+            <ModeButton
+              active={snapshot.room.game_mode === "five-teams"}
+              disabled={!isHost}
+              title="Five Teams"
+              detail="5 random clubs, one player name, adjustable seconds, 5 rounds."
+              onClick={() => onSettings("five-teams", snapshot.room.target_score, fiveTeamSeconds)}
+            />
           </div>
         </ControlGroup>
 
-        {snapshot.room.game_mode !== "imposter" ? (
+        {snapshot.room.game_mode === "five-teams" ? (
+          <ControlGroup title="Five Teams Süresi">
+            <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+              <div className="flex flex-wrap gap-2">
+                {[5, 10, 15, 20, 30].map((seconds) => (
+                  <button
+                    key={seconds}
+                    disabled={!isHost}
+                    onClick={() => saveFiveTeamSeconds(String(seconds))}
+                    className={`h-11 min-w-16 rounded-md border px-4 font-black transition ${
+                      fiveTeamSeconds === seconds
+                        ? "border-emerald-300 bg-emerald-300 text-emerald-950"
+                        : "border-white/10 bg-white/[0.05] text-white hover:bg-white/[0.1]"
+                    } disabled:cursor-not-allowed disabled:opacity-60`}
+                  >
+                    {seconds}s
+                  </button>
+                ))}
+              </div>
+              <div className="grid grid-cols-[1fr_auto] gap-2">
+                <input
+                  key={fiveTeamSeconds}
+                  ref={durationInputRef}
+                  defaultValue={fiveTeamSeconds}
+                  disabled={!isHost}
+                  inputMode="numeric"
+                  maxLength={2}
+                  onChange={(event) => {
+                    event.currentTarget.value = event.currentTarget.value.replace(/\D/g, "").slice(0, 2);
+                  }}
+                  onBlur={() => saveFiveTeamSeconds()}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      saveFiveTeamSeconds();
+                    }
+                  }}
+                  className="h-11 w-24 rounded-md border border-white/10 bg-black/30 px-3 text-center font-mono text-lg font-black text-white outline-none transition focus:border-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+                  aria-label="Five Teams round seconds"
+                />
+                <button
+                  onClick={() => saveFiveTeamSeconds()}
+                  disabled={!isHost}
+                  className="h-11 rounded-md border border-emerald-300/30 bg-emerald-300/10 px-4 font-bold text-emerald-100 transition hover:bg-emerald-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Kaydet
+                </button>
+              </div>
+            </div>
+          </ControlGroup>
+        ) : null}
+
+        {snapshot.room.game_mode !== "imposter" && snapshot.room.game_mode !== "five-teams" ? (
           <ControlGroup title="Target Score">
             <div className="flex flex-wrap gap-2">
               {TARGET_SCORES.map((score) => (
@@ -438,7 +547,11 @@ function Countdown({ snapshot, secondsLeft }: { snapshot: RoomSnapshot; secondsL
         <p className="text-sm font-bold uppercase tracking-[0.18em] text-emerald-300">Round {snapshot.room.current_round}</p>
         <div className="mt-6 text-[9rem] font-black leading-none text-white sm:text-[12rem]">{secondsLeft}</div>
         <p className="mt-4 text-xl font-bold text-zinc-200">
-          {snapshot.room.game_mode === "initials" ? "Initials incoming" : "Matchup incoming"}
+          {snapshot.room.game_mode === "initials"
+            ? "Initials incoming"
+            : snapshot.room.game_mode === "five-teams"
+              ? "Five teams incoming"
+              : "Matchup incoming"}
         </p>
       </div>
     </div>
@@ -536,6 +649,183 @@ function InitialsPlaying({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function FiveTeamsPlaying({
+  snapshot,
+  currentPlayerId,
+  secondsLeft,
+  busy,
+  onSubmitAnswer,
+  onDeleteAnswer,
+}: {
+  snapshot: RoomSnapshot;
+  currentPlayerId: string | null;
+  secondsLeft: number;
+  busy: string;
+  onSubmitAnswer: (text: string, onSuccess: () => void) => void;
+  onDeleteAnswer: (answerId: string) => void;
+}) {
+  const [answerText, setAnswerText] = useState("");
+  const teams = decodeTeamSet(snapshot.room.team_a);
+  const myAnswer = snapshot.answers.find((answer) => answer.player_id === currentPlayerId) ?? null;
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    onSubmitAnswer(answerText, () => setAnswerText(""));
+  }
+
+  return (
+    <div className="grid gap-5">
+      <div className="rounded-lg border border-emerald-300/20 bg-emerald-300/10 p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-bold uppercase tracking-[0.18em] text-emerald-200">
+              Round {snapshot.room.current_round}/{FIVE_TEAM_ROUNDS}
+            </p>
+            <h2 className="mt-2 text-3xl font-black">5 Takım</h2>
+          </div>
+          <div className="inline-flex h-11 items-center gap-2 self-start rounded-md border border-emerald-300/30 bg-black/20 px-4 font-mono text-xl font-black text-emerald-100 sm:self-auto">
+            <Timer size={18} />
+            {secondsLeft}s
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          {teams.map((team) => (
+            <TeamName key={team} name={team} />
+          ))}
+        </div>
+      </div>
+
+      <form onSubmit={handleSubmit} className="rounded-lg border border-white/10 bg-black/25 p-5">
+        <label className="text-sm font-bold text-zinc-200" htmlFor="five-team-answer">
+          Oyuncu adı
+        </label>
+        <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto]">
+          <input
+            id="five-team-answer"
+            value={answerText}
+            onChange={(event) => setAnswerText(event.target.value)}
+            maxLength={80}
+            className="h-[52px] min-h-[52px] rounded-md border border-white/10 bg-black/30 px-4 text-lg text-white outline-none transition focus:border-emerald-300"
+            placeholder={myAnswer?.text ?? "Oyuncu adı"}
+          />
+          <button
+            disabled={!currentPlayerId || !answerText.trim() || busy === "answer"}
+            className="h-[52px] rounded-md bg-emerald-400 px-5 font-black text-emerald-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {busy === "answer" ? "Kaydediliyor..." : myAnswer ? "Güncelle" : "Gönder"}
+          </button>
+        </div>
+        {myAnswer ? (
+          <div className="mt-3 flex items-center justify-between rounded-md border border-white/10 bg-white/[0.04] px-4 py-3 text-zinc-100">
+            <span>{myAnswer.text}</span>
+            <button
+              type="button"
+              onClick={() => onDeleteAnswer(myAnswer.id)}
+              disabled={busy === `delete-${myAnswer.id}`}
+              className="ml-3 shrink-0 text-zinc-500 transition hover:text-red-400 disabled:opacity-50"
+              title="Cevabı sil"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        ) : null}
+      </form>
+    </div>
+  );
+}
+
+function FiveTeamsReveal({
+  snapshot,
+  isHost,
+  busy,
+  onScoreRound,
+}: {
+  snapshot: RoomSnapshot;
+  isHost: boolean;
+  busy: string;
+  onScoreRound: (scores: { playerId: string; points: number }[]) => void;
+}) {
+  const teams = decodeTeamSet(snapshot.room.team_a);
+  const [scoreInputs, setScoreInputs] = useState<Record<string, number>>(() =>
+    Object.fromEntries(snapshot.players.map((player) => [player.id, 0])),
+  );
+
+  function setPlayerScore(playerId: string, value: string) {
+    const points = Math.max(0, Math.min(FIVE_TEAM_COUNT, Number(value) || 0));
+    setScoreInputs((current) => ({ ...current, [playerId]: points }));
+  }
+
+  function saveScores() {
+    onScoreRound(snapshot.players.map((player) => ({ playerId: player.id, points: scoreInputs[player.id] ?? 0 })));
+  }
+
+  return (
+    <div className="grid gap-5">
+      <div className="rounded-lg border border-white/10 bg-black/25 p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-bold uppercase tracking-[0.18em] text-emerald-300">
+              Round {snapshot.room.current_round}/{FIVE_TEAM_ROUNDS}
+            </p>
+            <h2 className="mt-2 text-3xl font-black">Cevaplar</h2>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {teams.map((team) => (
+              <TeamPill key={team} name={team} />
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-3">
+        {snapshot.players.map((player) => {
+          const answer = snapshot.answers.find((item) => item.player_id === player.id);
+
+          return (
+            <div key={player.id} className="rounded-lg border border-white/10 bg-black/25 p-4">
+              <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-center">
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-zinc-400">{player.nickname}</p>
+                  <p className="mt-1 truncate text-2xl font-black text-white">{answer?.text ?? "Cevap yok"}</p>
+                </div>
+                {isHost ? (
+                  <label className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-zinc-300">Puan</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={FIVE_TEAM_COUNT}
+                      value={scoreInputs[player.id] ?? 0}
+                      onChange={(event) => setPlayerScore(player.id, event.target.value)}
+                      className="h-11 w-20 rounded-md border border-white/10 bg-black/30 px-3 text-center font-mono text-lg font-black text-white outline-none transition [appearance:textfield] focus:border-emerald-300 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                    />
+                  </label>
+                ) : null}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {isHost ? (
+        <button
+          onClick={saveScores}
+          disabled={Boolean(busy)}
+          className="flex h-[52px] items-center justify-center gap-2 rounded-md bg-emerald-400 px-5 font-black text-emerald-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {busy === "score-round" ? <Loader2 className="animate-spin" size={18} /> : <Trophy size={18} />}
+          {snapshot.room.current_round >= FIVE_TEAM_ROUNDS ? "Puanları Kaydet ve Bitir" : "Puanları Kaydet"}
+        </button>
+      ) : (
+        <div className="rounded-md border border-white/10 bg-white/[0.04] px-4 py-3 text-center text-sm text-zinc-400">
+          Host puanları giriyor.
+        </div>
+      )}
     </div>
   );
 }
@@ -639,15 +929,17 @@ function LeaderboardPanel({
 }) {
   const winner = snapshot.players.find((player) => player.id === snapshot.room.winner_player_id);
   const players = [...snapshot.players].sort((a, b) => b.score - a.score || a.joined_at.localeCompare(b.joined_at));
+  const isFinished = snapshot.room.phase === "finished";
+  const title = winner ? winner.nickname : isFinished ? "Berabere" : `Round ${snapshot.room.current_round} complete`;
 
   return (
     <div className="rounded-lg border border-white/10 bg-black/25 p-5">
       <div className="text-center">
         <Trophy className="mx-auto text-emerald-300" size={42} />
         <p className="mt-4 text-sm font-bold uppercase tracking-[0.18em] text-emerald-300">
-          {winner ? "Winner" : "Leaderboard"}
+          {winner ? "Winner" : isFinished ? "Final" : "Leaderboard"}
         </p>
-        <h2 className="mt-2 text-4xl font-black">{winner ? winner.nickname : `Round ${snapshot.room.current_round} complete`}</h2>
+        <h2 className="mt-2 text-4xl font-black">{title}</h2>
       </div>
 
       <div className="mt-6 grid gap-3">
@@ -662,7 +954,7 @@ function LeaderboardPanel({
         ))}
       </div>
 
-      {isHost && !winner ? (
+      {isHost && !isFinished ? (
         <button
           onClick={onNextRound}
           disabled={Boolean(busy)}
@@ -762,6 +1054,9 @@ function PlayerList({ snapshot, currentPlayerId }: { snapshot: RoomSnapshot; cur
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm font-bold text-white">{player.nickname}</div>
             </div>
+            {player.id === currentPlayerId ? (
+              <span className="ml-1.5 shrink-0 text-[10px] font-bold uppercase tracking-[0.12em] text-zinc-500 sm:text-xs">You</span>
+            ) : null}
             {player.is_host ? (
               <span className="ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full bg-emerald-300/10 px-1.5 py-0.5 text-[10px] font-bold text-emerald-200 sm:gap-1 sm:px-2 sm:py-1 sm:text-xs">
                 <Crown size={10} />
@@ -955,6 +1250,17 @@ function ImposterPhase({
   );
 }
 
+function TeamPill({ name }: { name: string }) {
+  const logo = TEAM_LOGOS[name];
+
+  return (
+    <div className="inline-flex h-10 items-center gap-2 rounded-md border border-white/10 bg-white/[0.05] px-3">
+      {logo ? <Image src={logo} alt="" width={24} height={24} className="h-6 w-6 object-contain" /> : null}
+      <span className="text-xs font-bold text-zinc-100 sm:text-sm">{name}</span>
+    </div>
+  );
+}
+
 function TeamName({ name }: { name: string }) {
   const logo = TEAM_LOGOS[name];
 
@@ -962,7 +1268,7 @@ function TeamName({ name }: { name: string }) {
     <div className="grid min-h-36 place-items-center rounded-lg border border-white/10 bg-white/[0.05] px-5 py-6">
       {logo ? (
         <div className="flex flex-col items-center gap-3">
-          <img src={logo} alt={name} className="h-20 w-20 object-contain drop-shadow-lg sm:h-24 sm:w-24" />
+          <Image src={logo} alt={name} width={96} height={96} className="h-20 w-20 object-contain drop-shadow-lg sm:h-24 sm:w-24" />
           <span className="text-sm font-bold text-white">{name}</span>
         </div>
       ) : (
