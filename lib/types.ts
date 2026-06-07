@@ -1,4 +1,4 @@
-export type GameMode = "initials" | "team-battle";
+export type GameMode = "initials" | "team-battle" | "imposter";
 
 export type RoomPhase =
   | "lobby"
@@ -7,6 +7,7 @@ export type RoomPhase =
   | "reveal"
   | "leaderboard"
   | "team_showing"
+  | "imposter"
   | "finished";
 
 export type VoteValue = "accept" | "reject";
@@ -22,6 +23,9 @@ export type Room = {
   initials: string | null;
   team_a: string | null;
   team_b: string | null;
+  imposter_player_id: string | null;
+  imposter_player_name: string | null;
+  imposter_clue: string | null;
   phase_ends_at: string | null;
   winner_player_id: string | null;
   created_at: string;

@@ -16,7 +16,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { TARGET_SCORES } from "@/lib/constants";
+import { TARGET_SCORES, TEAM_LOGOS } from "@/lib/constants";
 import { getAnswerVoteTotals, groupAnswersByPlayer } from "@/lib/game-utils";
 import { useSessionStore } from "@/lib/session-store";
 import { createBrowserSupabaseClient } from "@/lib/supabase/client";
@@ -294,6 +294,16 @@ export function RoomClient({ code }: RoomClientProps) {
               />
             ) : null}
 
+            {snapshot.room.phase === "imposter" ? (
+              <ImposterPhase
+                snapshot={snapshot}
+                currentPlayerId={playerId}
+                isHost={isHost}
+                busy={action.busy}
+                onNewRound={() => postAction(`/api/rooms/${activeCode}/start`, { playerId }, "start")}
+              />
+            ) : null}
+
             {snapshot.room.phase === "team_showing" ? (
               <TeamBattle
                 snapshot={snapshot}
@@ -356,7 +366,7 @@ function Lobby({
 
       <div className="mt-6 grid gap-5">
         <ControlGroup title="Game Mode">
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-3">
             <ModeButton
               active={snapshot.room.game_mode === "initials"}
               disabled={!isHost}
@@ -371,32 +381,41 @@ function Lobby({
               detail="Generate matchups for verbal debates."
               onClick={() => onSettings("team-battle", snapshot.room.target_score)}
             />
+            <ModeButton
+              active={snapshot.room.game_mode === "imposter"}
+              disabled={!isHost}
+              title="Imposter"
+              detail="Find the player who only knows a clue. Min. 3 players."
+              onClick={() => onSettings("imposter", snapshot.room.target_score)}
+            />
           </div>
         </ControlGroup>
 
-        <ControlGroup title="Target Score">
-          <div className="flex flex-wrap gap-2">
-            {TARGET_SCORES.map((score) => (
-              <button
-                key={score}
-                disabled={!isHost}
-                onClick={() => onSettings(snapshot.room.game_mode, score)}
-                className={`h-11 min-w-16 rounded-md border px-4 font-black transition ${
-                  snapshot.room.target_score === score
-                    ? "border-emerald-300 bg-emerald-300 text-emerald-950"
-                    : "border-white/10 bg-white/[0.05] text-white hover:bg-white/[0.1]"
-                } disabled:cursor-not-allowed disabled:opacity-60`}
-              >
-                {score}
-              </button>
-            ))}
-          </div>
-        </ControlGroup>
+        {snapshot.room.game_mode !== "imposter" ? (
+          <ControlGroup title="Target Score">
+            <div className="flex flex-wrap gap-2">
+              {TARGET_SCORES.map((score) => (
+                <button
+                  key={score}
+                  disabled={!isHost}
+                  onClick={() => onSettings(snapshot.room.game_mode, score)}
+                  className={`h-11 min-w-16 rounded-md border px-4 font-black transition ${
+                    snapshot.room.target_score === score
+                      ? "border-emerald-300 bg-emerald-300 text-emerald-950"
+                      : "border-white/10 bg-white/[0.05] text-white hover:bg-white/[0.1]"
+                  } disabled:cursor-not-allowed disabled:opacity-60`}
+                >
+                  {score}
+                </button>
+              ))}
+            </div>
+          </ControlGroup>
+        ) : null}
 
         {isHost ? (
           <button
             onClick={onStart}
-            disabled={snapshot.players.length < 2 || Boolean(busy)}
+            disabled={snapshot.players.length < (snapshot.room.game_mode === "imposter" ? 3 : 2) || Boolean(busy)}
             className="flex h-14 items-center justify-center gap-2 rounded-md bg-emerald-400 px-5 text-lg font-black text-emerald-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {busy === "start" ? <Loader2 className="animate-spin" size={20} /> : <Play size={20} />}
@@ -856,10 +875,99 @@ function VoteButton({
   );
 }
 
-function TeamName({ name }: { name: string }) {
+function ImposterPhase({
+  snapshot,
+  currentPlayerId,
+  isHost,
+  busy,
+  onNewRound,
+}: {
+  snapshot: RoomSnapshot;
+  currentPlayerId: string | null;
+  isHost: boolean;
+  busy: string;
+  onNewRound: () => void;
+}) {
+  const [revealed, setRevealed] = useState(false);
+  const isImposter = currentPlayerId !== null && currentPlayerId === snapshot.room.imposter_player_id;
+  const imposterPlayer = snapshot.players.find((p) => p.id === snapshot.room.imposter_player_id);
+
   return (
-    <div className="grid min-h-36 place-items-center rounded-lg border border-white/10 bg-white/[0.05] px-5 py-8">
-      <div className="text-3xl font-black leading-tight text-white sm:text-4xl">{name}</div>
+    <div className="grid gap-4">
+      <div className="rounded-lg border border-white/10 bg-black/25 p-6 text-center">
+        <p className="text-sm font-bold uppercase tracking-[0.18em] text-emerald-300">
+          Round {snapshot.room.current_round} · Imposter
+        </p>
+
+        {isImposter ? (
+          <div className="mt-6">
+            <div className="inline-flex items-center gap-2 rounded-full border border-red-400/30 bg-red-500/10 px-4 py-2 text-sm font-bold text-red-300">
+              🕵️ İMPOSTOR
+            </div>
+            <p className="mt-5 text-sm text-zinc-400">Senin ipucun</p>
+            <div className="mt-3 font-mono text-6xl font-black tracking-wide text-white sm:text-7xl">
+              {snapshot.room.imposter_clue}
+            </div>
+            <p className="mt-5 text-sm text-zinc-400">Kimseye belli etmeden futbolcuyu tahmin et!</p>
+          </div>
+        ) : (
+          <div className="mt-6">
+            <p className="text-sm text-zinc-400">Futbolcu</p>
+            <div className="mt-3 text-5xl font-black leading-tight text-white sm:text-6xl">
+              {snapshot.room.imposter_player_name}
+            </div>
+            <p className="mt-5 text-sm text-zinc-400">Bir kişi sadece bir ipucu biliyor. O kim?</p>
+          </div>
+        )}
+      </div>
+
+      {isHost ? (
+        <div className="grid gap-3 rounded-lg border border-white/10 bg-black/25 p-4">
+          {!revealed ? (
+            <button
+              onClick={() => setRevealed(true)}
+              className="flex h-12 items-center justify-center gap-2 rounded-md border border-white/10 bg-white/[0.05] px-4 font-bold text-white transition hover:bg-white/[0.1]"
+            >
+              <Users size={18} />
+              İmpostoru Göster
+            </button>
+          ) : (
+            <div className="rounded-md border border-red-400/30 bg-red-500/10 px-4 py-3 text-center">
+              <p className="text-xs text-zinc-400">İmposter</p>
+              <p className="mt-1 text-xl font-black text-red-300">{imposterPlayer?.nickname ?? "?"}</p>
+            </div>
+          )}
+          <button
+            onClick={() => { setRevealed(false); onNewRound(); }}
+            disabled={Boolean(busy)}
+            className="flex h-12 items-center justify-center gap-2 rounded-md bg-emerald-400 px-4 font-black text-emerald-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {busy === "start" ? <Loader2 className="animate-spin" size={18} /> : <Play size={18} />}
+            Yeni Tur
+          </button>
+        </div>
+      ) : (
+        <div className="rounded-md border border-white/10 bg-white/[0.04] px-4 py-3 text-center text-sm text-zinc-400">
+          Tartışın ve impostoru bulmaya çalışın!
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TeamName({ name }: { name: string }) {
+  const logo = TEAM_LOGOS[name];
+
+  return (
+    <div className="grid min-h-36 place-items-center rounded-lg border border-white/10 bg-white/[0.05] px-5 py-6">
+      {logo ? (
+        <div className="flex flex-col items-center gap-3">
+          <img src={logo} alt={name} className="h-20 w-20 object-contain drop-shadow-lg sm:h-24 sm:w-24" />
+          <span className="text-sm font-bold text-white">{name}</span>
+        </div>
+      ) : (
+        <div className="text-3xl font-black leading-tight text-white sm:text-4xl">{name}</div>
+      )}
     </div>
   );
 }

@@ -9,6 +9,7 @@ import {
   randomMatchup,
   secondsFromNow,
 } from "@/lib/game-utils";
+import { randomImposterPick } from "@/lib/server/players";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import type { Answer, GameMode, Player, Room, RoomSnapshot, Vote, VoteValue } from "@/lib/types";
 
@@ -211,16 +212,49 @@ export async function startGame(code: string, playerId: string) {
   const supabase = createServerSupabaseClient();
   const snapshot = await requireHost(code, playerId);
 
-  if (snapshot.players.length < MIN_PLAYERS) {
-    throw new Error("A room needs at least 2 players.");
+  const minPlayers = snapshot.room.game_mode === "imposter" ? 3 : MIN_PLAYERS;
+
+  if (snapshot.players.length < minPlayers) {
+    throw new Error(
+      snapshot.room.game_mode === "imposter"
+        ? "Imposter mode requires at least 3 players."
+        : "A room needs at least 2 players.",
+    );
   }
 
-  if (!["lobby", "leaderboard", "finished", "team_showing"].includes(snapshot.room.phase)) {
+  if (!["lobby", "leaderboard", "finished", "team_showing", "imposter"].includes(snapshot.room.phase)) {
     throw new Error("A round is already in progress.");
   }
 
-  const matchup = snapshot.room.game_mode === "team-battle" ? randomMatchup() : null;
   const nextRound = snapshot.room.current_round + 1;
+
+  if (snapshot.room.game_mode === "imposter") {
+    const { playerName, clue } = randomImposterPick();
+    const imposterPlayer = snapshot.players[Math.floor(Math.random() * snapshot.players.length)];
+
+    const { data, error } = await supabase
+      .from("rooms")
+      .update({
+        phase: "imposter",
+        current_round: nextRound,
+        imposter_player_id: imposterPlayer.id,
+        imposter_player_name: playerName,
+        imposter_clue: clue,
+        initials: null,
+        team_a: null,
+        team_b: null,
+        phase_ends_at: null,
+        winner_player_id: null,
+      })
+      .eq("id", snapshot.room.id)
+      .select("*")
+      .single<Room>();
+
+    if (error) throw error;
+    return data;
+  }
+
+  const matchup = snapshot.room.game_mode === "team-battle" ? randomMatchup() : null;
 
   const { data, error } = await supabase
     .from("rooms")
@@ -230,6 +264,9 @@ export async function startGame(code: string, playerId: string) {
       initials: snapshot.room.game_mode === "initials" ? randomInitials() : null,
       team_a: matchup?.teamA.name ?? null,
       team_b: matchup?.teamB.name ?? null,
+      imposter_player_id: null,
+      imposter_player_name: null,
+      imposter_clue: null,
       phase_ends_at: secondsFromNow(3),
       winner_player_id: null,
     })

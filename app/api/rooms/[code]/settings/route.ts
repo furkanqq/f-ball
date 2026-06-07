@@ -13,7 +13,7 @@ export async function PATCH(request: Request, context: RouteContext<"/api/rooms/
     const { code } = await context.params;
     const body = await readJson<SettingsBody>(request);
 
-    if (body?.gameMode !== "initials" && body?.gameMode !== "team-battle") {
+    if (body?.gameMode !== "initials" && body?.gameMode !== "team-battle" && body?.gameMode !== "imposter") {
       return jsonError("Choose a valid game mode.");
     }
 
