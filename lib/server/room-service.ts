@@ -459,7 +459,7 @@ export async function finalizeRound(code: string, playerId: string) {
     snapshot.players.map(async (player) => {
       const hasValidAnswer = (validCountByPlayer.get(player.id) ?? 0) > 0;
       const delta = roundWinners.has(player.id) ? 1 : hasValidAnswer ? 0 : -1;
-      const score = player.score + delta;
+      const score = Math.max(0, player.score + delta);
       const { data, error } = await supabase
         .from("players")
         .update({ score })

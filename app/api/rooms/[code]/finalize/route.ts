@@ -1,4 +1,4 @@
-import { jsonError, readJson } from "@/lib/api-response";
+import { getErrorMessage, jsonError, readJson } from "@/lib/api-response";
 import { finalizeRound } from "@/lib/server/room-service";
 
 type FinalizeBody = {
@@ -13,6 +13,6 @@ export async function POST(request: Request, context: RouteContext<"/api/rooms/[
 
     return Response.json(result);
   } catch (error) {
-    return jsonError(error instanceof Error ? error.message : "Could not finalize round.");
+    return jsonError(getErrorMessage(error, "Could not finalize round."));
   }
 }
