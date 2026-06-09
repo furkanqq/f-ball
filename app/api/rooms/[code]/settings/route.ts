@@ -1,9 +1,11 @@
-import { getErrorMessage, jsonError, readJson } from "@/lib/api-response";
+import { getErrorMessage, getErrorStatus, jsonError, readJson } from "@/lib/api-response";
+import { enforceRateLimit } from "@/lib/server/rate-limit";
 import { updateSettings } from "@/lib/server/room-service";
 import type { GameMode } from "@/lib/types";
 
 type SettingsBody = {
   playerId?: string;
+  sessionToken?: string;
   gameMode?: GameMode;
   targetScore?: number;
   fiveTeamSeconds?: number;
@@ -11,6 +13,7 @@ type SettingsBody = {
 
 export async function PATCH(request: Request, context: RouteContext<"/api/rooms/[code]/settings">) {
   try {
+    enforceRateLimit(request, { key: "rooms:settings", limit: 60, windowMs: 60_000 });
     const { code } = await context.params;
     const body = await readJson<SettingsBody>(request);
 
@@ -26,6 +29,7 @@ export async function PATCH(request: Request, context: RouteContext<"/api/rooms/
     const room = await updateSettings(
       code,
       body?.playerId ?? "",
+      body?.sessionToken ?? "",
       body.gameMode,
       Number(body?.targetScore),
       body?.fiveTeamSeconds === undefined ? undefined : Number(body.fiveTeamSeconds),
@@ -33,6 +37,6 @@ export async function PATCH(request: Request, context: RouteContext<"/api/rooms/
 
     return Response.json({ room });
   } catch (error) {
-    return jsonError(getErrorMessage(error, "Could not update settings."));
+    return jsonError(getErrorMessage(error, "Could not update settings."), getErrorStatus(error));
   }
 }

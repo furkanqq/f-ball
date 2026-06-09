@@ -1,6 +1,8 @@
 export const TARGET_SCORES = [5, 10, 15] as const;
 export const FIVE_TEAM_COUNT = 5;
 export const FIVE_TEAM_ROUNDS = 5;
+export const COUNTDOWN_DISPLAY_SECONDS = 3;
+export const COUNTDOWN_PHASE_SECONDS = 4;
 export const DEFAULT_FIVE_TEAM_SECONDS = 10;
 export const MIN_FIVE_TEAM_SECONDS = 5;
 export const MAX_FIVE_TEAM_SECONDS = 60;

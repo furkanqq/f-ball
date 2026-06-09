@@ -16,6 +16,14 @@ export function getErrorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
+export function getErrorStatus(error: unknown, fallback = 400) {
+  if (error && typeof error === "object" && "status" in error && typeof error.status === "number") {
+    return error.status;
+  }
+
+  return fallback;
+}
+
 export async function readJson<T>(request: Request): Promise<T | null> {
   try {
     return (await request.json()) as T;

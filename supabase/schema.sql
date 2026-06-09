@@ -58,8 +58,11 @@ create table if not exists public.players (
   nickname text not null check (char_length(nickname) between 1 and 24),
   is_host boolean not null default false,
   score integer not null default 0 check (score >= 0),
+  session_token_hash text,
   joined_at timestamptz not null default now()
 );
+
+alter table public.players add column if not exists session_token_hash text;
 
 alter table public.rooms
   drop constraint if exists rooms_host_player_id_fkey;
@@ -97,11 +100,28 @@ create table if not exists public.votes (
   unique (answer_id, voter_player_id)
 );
 
+create table if not exists public.score_events (
+  id uuid primary key default gen_random_uuid(),
+  batch_id uuid not null,
+  room_id uuid not null references public.rooms(id) on delete cascade,
+  round_number integer not null check (round_number > 0),
+  game_mode public.game_mode not null,
+  player_id uuid not null references public.players(id) on delete cascade,
+  delta integer not null,
+  reason text not null check (reason in ('initials-finalize', 'team-battle-award', 'five-teams-manual')),
+  created_by_player_id uuid references public.players(id) on delete set null,
+  created_at timestamptz not null default now(),
+  undone_at timestamptz,
+  undone_by_player_id uuid references public.players(id) on delete set null
+);
+
 create index if not exists rooms_code_idx on public.rooms(code);
 create index if not exists players_room_id_idx on public.players(room_id);
 create index if not exists answers_room_round_idx on public.answers(room_id, round_number);
 create index if not exists votes_room_id_idx on public.votes(room_id);
 create index if not exists votes_answer_id_idx on public.votes(answer_id);
+create index if not exists score_events_room_created_idx on public.score_events(room_id, created_at desc);
+create index if not exists score_events_batch_idx on public.score_events(batch_id);
 
 create or replace function public.set_updated_at()
 returns trigger
@@ -124,16 +144,19 @@ alter table public.rooms enable row level security;
 alter table public.players enable row level security;
 alter table public.answers enable row level security;
 alter table public.votes enable row level security;
+alter table public.score_events enable row level security;
 
 drop policy if exists "rooms are readable" on public.rooms;
 drop policy if exists "players are readable" on public.players;
 drop policy if exists "answers are readable" on public.answers;
 drop policy if exists "votes are readable" on public.votes;
+drop policy if exists "score events are readable" on public.score_events;
 
-create policy "rooms are readable" on public.rooms for select to anon using (true);
-create policy "players are readable" on public.players for select to anon using (true);
-create policy "answers are readable" on public.answers for select to anon using (true);
-create policy "votes are readable" on public.votes for select to anon using (true);
+drop policy if exists "rooms anon readable" on public.rooms;
+drop policy if exists "players anon readable" on public.players;
+drop policy if exists "answers anon readable" on public.answers;
+drop policy if exists "votes anon readable" on public.votes;
+drop policy if exists "score events anon readable" on public.score_events;
 
 do $$
 begin
@@ -164,6 +187,13 @@ begin
       where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'votes'
     ) then
       alter publication supabase_realtime add table public.votes;
+    end if;
+
+    if not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'score_events'
+    ) then
+      alter publication supabase_realtime add table public.score_events;
     end if;
   end if;
 end $$;

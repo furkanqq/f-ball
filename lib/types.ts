@@ -39,6 +39,7 @@ export type Player = {
   nickname: string;
   is_host: boolean;
   score: number;
+  session_token_hash?: string;
   joined_at: string;
 };
 
@@ -62,11 +63,29 @@ export type Vote = {
   created_at: string;
 };
 
+export type ScoreEventReason = "initials-finalize" | "team-battle-award" | "five-teams-manual";
+
+export type ScoreEvent = {
+  id: string;
+  batch_id: string;
+  room_id: string;
+  round_number: number;
+  game_mode: GameMode;
+  player_id: string;
+  delta: number;
+  reason: ScoreEventReason;
+  created_by_player_id: string | null;
+  created_at: string;
+  undone_at: string | null;
+  undone_by_player_id: string | null;
+};
+
 export type RoomSnapshot = {
   room: Room;
   players: Player[];
   answers: Answer[];
   votes: Vote[];
+  scoreEvents: ScoreEvent[];
 };
 
 export type ApiError = {
