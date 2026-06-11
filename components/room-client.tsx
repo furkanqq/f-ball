@@ -28,7 +28,7 @@ import { useTranslation } from "@/lib/language-store";
 import { useSessionStore } from "@/lib/session-store";
 import { shouldIncludeClientAnswers, shouldIncludeClientVotes } from "@/lib/snapshot-scope";
 import { createBrowserSupabaseClient } from "@/lib/supabase/client";
-import type { ApiError, RoomSnapshot } from "@/lib/types";
+import type { Answer, ApiError, RoomSnapshot } from "@/lib/types";
 
 type RoomClientProps = {
   code: string;
@@ -43,6 +43,7 @@ export function RoomClient({ code }: RoomClientProps) {
   const t = useTranslation();
   const { playerId, roomCode, sessionToken } = useSessionStore();
   const [snapshot, setSnapshot] = useState<RoomSnapshot | null>(null);
+  const [optimisticAnswers, setOptimisticAnswers] = useState<Answer[]>([]);
   const [loading, setLoading] = useState(true);
   const [action, setAction] = useState<ActionState>({ busy: "", error: "" });
 
@@ -145,6 +146,24 @@ export function RoomClient({ code }: RoomClientProps) {
   const currentPlayer = snapshot?.players.find((player) => player.id === playerId) ?? null;
   const activeCode = snapshot?.room.code ?? code;
   const isSessionForRoom = roomCode === activeCode && Boolean(currentPlayer) && Boolean(sessionToken);
+  const visibleSnapshot = useMemo(() => {
+    if (!snapshot || optimisticAnswers.length === 0) {
+      return snapshot;
+    }
+
+    const answerIds = new Set(snapshot.answers.map((answer) => answer.id));
+    const mergedAnswers = [
+      ...snapshot.answers,
+      ...optimisticAnswers.filter(
+        (answer) =>
+          answer.room_id === snapshot.room.id &&
+          answer.round_number === snapshot.room.current_round &&
+          !answerIds.has(answer.id),
+      ),
+    ];
+
+    return { ...snapshot, answers: mergedAnswers };
+  }, [optimisticAnswers, snapshot]);
 
   const leaderboard = useMemo(
     () => [...(snapshot?.players ?? [])].sort((a, b) => b.score - a.score || a.joined_at.localeCompare(b.joined_at)),
@@ -163,7 +182,7 @@ export function RoomClient({ code }: RoomClientProps) {
     if (response.ok) {
       await loadSnapshot();
       setAction({ busy: "", error: "" });
-      return true;
+      return data;
     }
 
     setAction({ busy: "", error: "error" in (data as ApiError) ? (data as ApiError).error : "Action failed." });
@@ -184,9 +203,13 @@ export function RoomClient({ code }: RoomClientProps) {
       return;
     }
 
-    const ok = await postAction(`/api/rooms/${activeCode}/answers`, { playerId, text }, "answer");
+    const result = await postAction(`/api/rooms/${activeCode}/answers`, { playerId, text }, "answer");
 
-    if (ok) {
+    if (result && typeof result === "object" && "answer" in result) {
+      setOptimisticAnswers((current) => {
+        const answer = (result as { answer: Answer }).answer;
+        return [...current.filter((item) => item.id !== answer.id), answer];
+      });
       onSuccess();
     }
   }
@@ -300,7 +323,7 @@ export function RoomClient({ code }: RoomClientProps) {
               <CountdownTimer phaseEndsAt={snapshot.room.phase_ends_at}>
                 {(secondsLeft) => (
                   <InitialsPlaying
-                    snapshot={snapshot}
+                    snapshot={visibleSnapshot ?? snapshot}
                     currentPlayerId={playerId}
                     secondsLeft={secondsLeft}
                     isHost={isHost}
@@ -317,7 +340,7 @@ export function RoomClient({ code }: RoomClientProps) {
               <CountdownTimer phaseEndsAt={snapshot.room.phase_ends_at}>
                 {(secondsLeft) => (
                   <FiveTeamsPlaying
-                    snapshot={snapshot}
+                    snapshot={visibleSnapshot ?? snapshot}
                     currentPlayerId={playerId}
                     secondsLeft={secondsLeft}
                     busy={action.busy}
@@ -330,7 +353,7 @@ export function RoomClient({ code }: RoomClientProps) {
 
             {snapshot.room.phase === "reveal" && snapshot.room.game_mode === "initials" ? (
               <Reveal
-                snapshot={snapshot}
+                snapshot={visibleSnapshot ?? snapshot}
                 currentPlayerId={playerId}
                 isHost={isHost}
                 busy={action.busy}
@@ -341,7 +364,7 @@ export function RoomClient({ code }: RoomClientProps) {
 
             {snapshot.room.phase === "reveal" && snapshot.room.game_mode === "five-teams" ? (
               <FiveTeamsReveal
-                snapshot={snapshot}
+                snapshot={visibleSnapshot ?? snapshot}
                 isHost={isHost}
                 busy={action.busy}
                 onScoreRound={(scores) => postAction(`/api/rooms/${activeCode}/score`, { playerId, scores }, "score-round")}
