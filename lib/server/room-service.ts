@@ -304,6 +304,16 @@ export async function updateSettings(
   return data;
 }
 
+export async function closeRoom(code: string, playerId: string, sessionToken: string) {
+  const supabase = createServerSupabaseClient();
+  const snapshot = await requireHost(code, playerId, sessionToken);
+  const { error } = await supabase.from("rooms").delete().eq("id", snapshot.room.id);
+
+  if (error) {
+    throw error;
+  }
+}
+
 export async function startGame(code: string, playerId: string, sessionToken: string) {
   const supabase = createServerSupabaseClient();
   const snapshot = await requireHost(code, playerId, sessionToken);

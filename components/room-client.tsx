@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { Copy, Loader2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Copy, Loader2, Trash2 } from "lucide-react";
 import { LanguageToggle } from "@/components/language-toggle";
 import { CountdownTimer, PhaseAutoAdvance } from "@/components/room/phase-timer";
 import {
@@ -41,11 +42,13 @@ type ActionState = {
 
 export function RoomClient({ code }: RoomClientProps) {
   const t = useTranslation();
-  const { playerId, roomCode, sessionToken } = useSessionStore();
+  const router = useRouter();
+  const { playerId, roomCode, sessionToken, clearSession } = useSessionStore();
   const [snapshot, setSnapshot] = useState<RoomSnapshot | null>(null);
   const [optimisticAnswers, setOptimisticAnswers] = useState<Answer[]>([]);
   const [loading, setLoading] = useState(true);
   const [action, setAction] = useState<ActionState>({ busy: "", error: "" });
+  const hadLoadedRoomRef = useRef(false);
 
   const loadSnapshot = useCallback(async () => {
     const params = new URLSearchParams();
@@ -62,14 +65,23 @@ export function RoomClient({ code }: RoomClientProps) {
     const data = (await response.json()) as RoomSnapshot | ApiError;
 
     if ("error" in data) {
+      if (response.status === 404 && (hadLoadedRoomRef.current || roomCode === code)) {
+        clearSession();
+        setSnapshot(null);
+        setLoading(false);
+        router.replace("/");
+        return;
+      }
+
       setAction((current) => ({ ...current, error: data.error }));
     } else {
+      hadLoadedRoomRef.current = true;
       setSnapshot(data);
       setAction((current) => ({ ...current, error: "" }));
     }
 
     setLoading(false);
-  }, [code, playerId, sessionToken]);
+  }, [clearSession, code, playerId, roomCode, router, sessionToken]);
 
   const { cancel: cancelRealtimeSnapshot, run: scheduleRealtimeSnapshot } = useDebouncedCallback(loadSnapshot, 250);
 
@@ -198,6 +210,28 @@ export function RoomClient({ code }: RoomClientProps) {
     await navigator.clipboard?.writeText(activeCode);
   }
 
+  async function closeRoom() {
+    if (!playerId || !window.confirm(t.room.closeRoomConfirm)) {
+      return;
+    }
+
+    setAction({ busy: "close-room", error: "" });
+    const response = await fetch(`/api/rooms/${activeCode}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ playerId, sessionToken }),
+    });
+    const data = (await response.json()) as ApiError | { ok: true };
+
+    if (response.ok) {
+      clearSession();
+      router.replace("/");
+      return;
+    }
+
+    setAction({ busy: "", error: "error" in data ? data.error : "Action failed." });
+  }
+
   async function submitAnswer(text: string, onSuccess: () => void) {
     if (!text.trim() || !playerId) {
       return;
@@ -255,7 +289,7 @@ export function RoomClient({ code }: RoomClientProps) {
       />
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-4 sm:px-6 lg:px-8">
         <header className="rounded-lg border border-white/10 bg-black/25 px-3 py-3 backdrop-blur sm:p-4">
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <Link className="text-xs font-semibold text-emerald-300 sm:text-sm" href="/">
                 <Image
@@ -271,7 +305,7 @@ export function RoomClient({ code }: RoomClientProps) {
                 {t.room.room} <span className="font-mono text-emerald-300">{activeCode}</span>
               </h1>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 sm:justify-end">
               <button
                 onClick={copyCode}
                 className="inline-flex h-10 items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.05] px-2.5 text-xs font-bold text-white transition hover:bg-white/[0.1] sm:h-11 sm:gap-2 sm:px-4 sm:text-sm"
@@ -279,6 +313,16 @@ export function RoomClient({ code }: RoomClientProps) {
                 <Copy size={14} />
                 <span className="hidden sm:inline">{t.room.copyCode}</span>
               </button>
+              {isHost ? (
+                <button
+                  onClick={closeRoom}
+                  disabled={Boolean(action.busy)}
+                  className="inline-flex h-10 items-center gap-1.5 rounded-md border border-red-300/30 bg-red-500/10 px-2.5 text-xs font-bold text-red-100 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50 sm:h-11 sm:gap-2 sm:px-4 sm:text-sm"
+                >
+                  {action.busy === "close-room" ? <Loader2 className="animate-spin" size={14} /> : <Trash2 size={14} />}
+                  <span className="hidden sm:inline">{t.room.closeRoom}</span>
+                </button>
+              ) : null}
               <PhaseBadge phase={snapshot.room.phase} />
               <LanguageToggle />
             </div>
